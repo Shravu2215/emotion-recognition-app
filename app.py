@@ -84,30 +84,38 @@ class EmotionProcessor(VideoProcessorBase):
 import requests
 
 # ---- FETCH TURN CREDENTIALS FROM METERED (kept out of the public GitHub repo) ----
+# Metered requires two steps: (1) use the SECRET key to create a credential,
+# which returns a per-credential API key, then (2) use that API key to fetch
+# the actual usable ICE servers array (with real TURN URLs).
 @st.cache_resource
 def get_ice_servers():
     try:
         metered_domain = st.secrets["METERED_DOMAIN"]
-        metered_api_key = st.secrets["METERED_API_KEY"]
-        response = requests.get(
-            f"https://{metered_domain}/api/v1/turn/credentials",
-            params={"apiKey": metered_api_key},
+        secret_key = st.secrets["METERED_SECRET_KEY"]
+
+        # Step 1: create a credential using the secret key
+        create_resp = requests.post(
+            f"https://{metered_domain}/api/v1/turn/credential",
+            params={"secretKey": secret_key},
+            json={"label": "streamlit-app"},
             timeout=10,
         )
-        data = response.json()
+        create_data = create_resp.json()
+        if "apiKey" not in create_data:
+            raise ValueError(f"Could not create credential: {create_data}")
 
-        # Metered's API has returned either a plain list of ice servers,
-        # or a dict wrapping that list under an "iceServers" key.
-        # Handle both shapes defensively.
-        if isinstance(data, list):
-            ice_servers = data
-        elif isinstance(data, dict) and "iceServers" in data:
-            ice_servers = data["iceServers"]
-        else:
-            raise ValueError(f"Unexpected TURN credential format: {data}")
+        credential_api_key = create_data["apiKey"]
+
+        # Step 2: use that credential's apiKey to fetch the real ICE servers
+        get_resp = requests.get(
+            f"https://{metered_domain}/api/v1/turn/credentials",
+            params={"apiKey": credential_api_key},
+            timeout=10,
+        )
+        ice_servers = get_resp.json()
 
         if not isinstance(ice_servers, list) or len(ice_servers) == 0:
-            raise ValueError("ice_servers is not a non-empty list")
+            raise ValueError(f"Unexpected ICE servers format: {ice_servers}")
 
         return ice_servers
     except Exception as e:
