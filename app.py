@@ -81,23 +81,26 @@ class EmotionProcessor(VideoProcessorBase):
 # STUN server helps the browser and server find each other over the internet.
 # This is required for cloud deployment (not needed for localhost testing,
 # but keeping it makes the code work in both cases).
-RTC_CONFIGURATION = RTCConfiguration(
-    {
-        "iceServers": [
-            {"urls": ["stun:stun.l.google.com:19302"]},
-            {
-                "urls": ["turn:openrelay.metered.ca:80"],
-                "username": "openrelayproject",
-                "credential": "openrelayproject",
-            },
-            {
-                "urls": ["turn:openrelay.metered.ca:443"],
-                "username": "openrelayproject",
-                "credential": "openrelayproject",
-            },
-        ]
-    }
-)
+import requests
+
+# ---- FETCH TURN CREDENTIALS FROM METERED (kept out of the public GitHub repo) ----
+@st.cache_resource
+def get_ice_servers():
+    try:
+        metered_domain = st.secrets["METERED_DOMAIN"]
+        metered_api_key = st.secrets["METERED_API_KEY"]
+        response = requests.get(
+            f"https://{metered_domain}/api/v1/turn/credentials",
+            params={"apiKey": metered_api_key},
+            timeout=10,
+        )
+        ice_servers = response.json()
+        return ice_servers
+    except Exception:
+        # Fallback to public STUN only if the TURN fetch fails for any reason
+        return [{"urls": ["stun:stun.l.google.com:19302"]}]
+
+RTC_CONFIGURATION = RTCConfiguration({"iceServers": get_ice_servers()})
 
 # ---- LAYOUT ----
 col1, col2 = st.columns([2, 1])
