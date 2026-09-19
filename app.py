@@ -94,10 +94,24 @@ def get_ice_servers():
             params={"apiKey": metered_api_key},
             timeout=10,
         )
-        ice_servers = response.json()
+        data = response.json()
+
+        # Metered's API has returned either a plain list of ice servers,
+        # or a dict wrapping that list under an "iceServers" key.
+        # Handle both shapes defensively.
+        if isinstance(data, list):
+            ice_servers = data
+        elif isinstance(data, dict) and "iceServers" in data:
+            ice_servers = data["iceServers"]
+        else:
+            raise ValueError(f"Unexpected TURN credential format: {data}")
+
+        if not isinstance(ice_servers, list) or len(ice_servers) == 0:
+            raise ValueError("ice_servers is not a non-empty list")
+
         return ice_servers
-    except Exception:
-        # Fallback to public STUN only if the TURN fetch fails for any reason
+    except Exception as e:
+        st.warning(f"Could not fetch TURN credentials, falling back to STUN only: {e}")
         return [{"urls": ["stun:stun.l.google.com:19302"]}]
 
 RTC_CONFIGURATION = RTCConfiguration({"iceServers": get_ice_servers()})
