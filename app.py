@@ -416,7 +416,7 @@ if page == "📷 Live Dashboard":
                     },
                 ]
             },
-
+        )
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown('<div class="ai-card">', unsafe_allow_html=True)
         st.markdown('<div class="card-title">📊 Session Analytics</div>', unsafe_allow_html=True)
