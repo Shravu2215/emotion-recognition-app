@@ -9,12 +9,6 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from streamlit_webrtc import (
-    webrtc_streamer,
-    VideoProcessorBase,
-    RTCConfiguration
-)
-
 from tensorflow.keras.models import load_model
 
 # ============================================================
@@ -267,93 +261,38 @@ if "session_start" not in st.session_state:
 # EMOTION PROCESSOR
 # ============================================================
 
-class EmotionProcessor(VideoProcessorBase):
-    def __init__(self):
-        self.lock = threading.Lock()
-        self.records = []
-        self.current_emotion = "No face detected"
-        self.confidence = 0
-        self.probabilities = np.zeros(len(EMOTIONS))
-        self.window = deque(maxlen=SMOOTH_WINDOW)
-        self.start_time = time.time()
-        self.last_record = 0
-        self.faces_detected = 0
-
-    def recv(self, frame):
-        img = frame.to_ndarray(format="bgr24")
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(80, 80))
-        
-        label = "No face detected"
-        confidence = 0
-        
-        if len(faces) > 0:
-            x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
-            face = gray[y:y+h, x:x+w]
-            face = cv2.resize(face, (IMG_SIZE, IMG_SIZE))
-            face = face.astype("float32") / 255.0
-            face = np.expand_dims(face, axis=(0, -1))
-            
-            prediction = model.predict(face, verbose=0)[0]
-            raw_emotion = EMOTIONS[int(np.argmax(prediction))]
-            confidence = float(np.max(prediction)) * 100
-            
-            self.window.append(raw_emotion)
-            label = Counter(self.window).most_common(1)[0][0]
-            
-            with self.lock:
-                self.probabilities = prediction * 100
-            
-            # Draw Face Box
-            color_hex = EMOTION_COLORS.get(label, "#6366F1").lstrip('#')
-            box_color = tuple(int(color_hex[i:i+2], 16) for i in (4, 2, 0)) # BGR
-            cv2.rectangle(img, (x, y), (x + w, y + h), box_color, 2)
-            
-            # Label background
-            cv2.rectangle(img, (x, y - 30), (x + w, y), box_color, -1)
-            cv2.putText(img, f"{label} {confidence:.0f}%", (x + 5, y - 10), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-            
-            now = time.time()
-            with self.lock:
-                if now - self.last_record >= RECORD_EVERY_SEC:
-                    self.records.append((round(now - self.start_time, 1), label, confidence))
-                    self.last_record = now
-        else:
-            self.window.clear()
-            with self.lock:
-                self.probabilities = np.zeros(len(EMOTIONS))
-            
-        with self.lock:
-            self.current_emotion = label
-            self.confidence = confidence
-            self.faces_detected = len(faces)
-            
-        return av.VideoFrame.from_ndarray(img, format="bgr24")
-
-
-def get_ice_servers():
+def analyze_frame(img_bgr):
     """
-    Use Twilio's TURN server if secrets are provided, otherwise fallback to multiple STUNs.
+    Runs face detection + emotion prediction on a single BGR image (numpy array).
+    Returns (annotated_img_bgr, label, confidence, probabilities, faces_count)
     """
-    try:
-        if "TWILIO_ACCOUNT_SID" in st.secrets and "TWILIO_AUTH_TOKEN" in st.secrets:
-            from twilio.rest import Client
-            client = Client(st.secrets["TWILIO_ACCOUNT_SID"], st.secrets["TWILIO_AUTH_TOKEN"])
-            token = client.tokens.create()
-            return token.ice_servers
-    except Exception as e:
-        print("Could not fetch TURN servers from Twilio:", e)
-        
-    return [
-        {"urls": ["stun:stun.l.google.com:19302"]},
-        {"urls": ["stun:stun1.l.google.com:19302"]},
-        {"urls": ["stun:stun2.l.google.com:19302"]},
-        {"urls": ["stun:stun3.l.google.com:19302"]},
-        {"urls": ["stun:stun4.l.google.com:19302"]},
-    ]
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(80, 80))
 
-RTC_CONFIGURATION = RTCConfiguration({"iceServers": get_ice_servers()})
+    label = "No face detected"
+    confidence = 0
+    probabilities = np.zeros(len(EMOTIONS))
+
+    if len(faces) > 0:
+        x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+        face = gray[y:y + h, x:x + w]
+        face = cv2.resize(face, (IMG_SIZE, IMG_SIZE))
+        face = face.astype("float32") / 255.0
+        face = np.expand_dims(face, axis=(0, -1))
+
+        prediction = model.predict(face, verbose=0)[0]
+        label = EMOTIONS[int(np.argmax(prediction))]
+        confidence = float(np.max(prediction)) * 100
+        probabilities = prediction * 100
+
+        color_hex = EMOTION_COLORS.get(label, "#6366F1").lstrip('#')
+        box_color = tuple(int(color_hex[i:i+2], 16) for i in (4, 2, 0))  # BGR
+        cv2.rectangle(img_bgr, (x, y), (x + w, y + h), box_color, 2)
+        cv2.rectangle(img_bgr, (x, y - 30), (x + w, y), box_color, -1)
+        cv2.putText(img_bgr, f"{label} {confidence:.0f}%", (x + 5, y - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+    return img_bgr, label, confidence, probabilities, len(faces)
 
 # ============================================================
 # SIDEBAR
@@ -403,13 +342,25 @@ if page == "📷 Live Dashboard":
             </div>
         """, unsafe_allow_html=True)
         
-        ctx = webrtc_streamer(
-            key="emotion-ai-core-v3",
-            video_processor_factory=EmotionProcessor,
-            rtc_configuration=RTC_CONFIGURATION,
-            media_stream_constraints={"video": True, "audio": False},
-            async_processing=True
-        )
+        captured = st.camera_input("Take a photo", label_visibility="collapsed")
+
+        current = "No face detected"
+        conf = 0
+        probs = np.zeros(len(EMOTIONS))
+        faces_cnt = 0
+
+        if captured is not None:
+            file_bytes = np.asarray(bytearray(captured.getvalue()), dtype=np.uint8)
+            img_bgr = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+            annotated, current, conf, probs, faces_cnt = analyze_frame(img_bgr)
+            st.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB), use_container_width=True)
+
+            if st.session_state.session_start is None:
+                st.session_state.session_start = time.time()
+            now = time.time()
+            st.session_state.records.append(
+                (round(now - st.session_state.session_start, 1), current, conf)
+            )
         
         # Analytics Section (Below Camera)
         st.markdown("<br>", unsafe_allow_html=True)
@@ -445,73 +396,57 @@ if page == "📷 Live Dashboard":
         probs_ph = st.empty()
         st.markdown('</div>', unsafe_allow_html=True)
         
-        # Dynamic Update Loop
-        if ctx.state.playing:
-            if st.session_state.session_start is None:
-                st.session_state.session_start = time.time()
-                
-            while ctx.state.playing:
-                processor = ctx.video_processor
-                if processor:
-                    with processor.lock:
-                        current = processor.current_emotion
-                        conf = processor.confidence
-                        probs = processor.probabilities.copy()
-                        faces_cnt = processor.faces_detected
-                        st.session_state.records = list(processor.records)
-                        
-                    duration = int(time.time() - st.session_state.session_start)
-                    mins, secs = divmod(duration, 60)
-                    
-                    # 1. Update Top Stats Grid
-                    metrics_ph.markdown(f"""
-                        <div class="metric-grid">
-                            <div class="stat-box">
-                                <div class="stat-label">Expression</div>
-                                <div class="stat-val" style="font-size:16px;">{EMOTION_ICONS.get(current, '')} {current}</div>
-                            </div>
-                            <div class="stat-box">
-                                <div class="stat-label">Confidence</div>
-                                <div class="stat-val">{conf:.0f}%</div>
-                            </div>
-                            <div class="stat-box">
-                                <div class="stat-label">Faces</div>
-                                <div class="stat-val">{faces_cnt}</div>
-                            </div>
-                            <div class="stat-box">
-                                <div class="stat-label">Duration</div>
-                                <div class="stat-val">{mins}:{secs:02d}</div>
-                            </div>
+        # Update panel based on the latest captured photo (if any)
+        if captured is not None:
+            mins, secs = 0, 0
+            if st.session_state.session_start is not None:
+                duration = int(time.time() - st.session_state.session_start)
+                mins, secs = divmod(duration, 60)
+
+            metrics_ph.markdown(f"""
+                <div class="metric-grid">
+                    <div class="stat-box">
+                        <div class="stat-label">Expression</div>
+                        <div class="stat-val" style="font-size:16px;">{EMOTION_ICONS.get(current, '')} {current}</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Confidence</div>
+                        <div class="stat-val">{conf:.0f}%</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Faces</div>
+                        <div class="stat-val">{faces_cnt}</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Duration</div>
+                        <div class="stat-val">{mins}:{secs:02d}</div>
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
+
+            probs_html = '<div style="margin-top: 24px;"><div class="card-title">Live Probabilities</div>'
+            for i, emotion in enumerate(EMOTIONS):
+                p = probs[i]
+                color = EMOTION_COLORS[emotion]
+                probs_html += f"""
+                    <div class="prob-container">
+                        <div class="prob-label">
+                            <span>{emotion}</span>
+                            <span>{p:.1f}%</span>
                         </div>
-                    """, unsafe_allow_html=True)
-                    
-                    # 2. Update Probability Bars
-                    probs_html = '<div style="margin-top: 24px;"><div class="card-title">Live Probabilities</div>'
-                    for i, emotion in enumerate(EMOTIONS):
-                        p = probs[i]
-                        color = EMOTION_COLORS[emotion]
-                        probs_html += f"""
-                            <div class="prob-container">
-                                <div class="prob-label">
-                                    <span>{emotion}</span>
-                                    <span>{p:.1f}%</span>
-                                </div>
-                                <div class="prob-track">
-                                    <div class="prob-fill" style="width: {p}%; background-color: {color};"></div>
-                                </div>
-                            </div>
-                        """
-                    probs_html += '</div>'
-                    probs_ph.markdown(probs_html, unsafe_allow_html=True)
-                    
-                time.sleep(0.2)
+                        <div class="prob-track">
+                            <div class="prob-fill" style="width: {p}%; background-color: {color};"></div>
+                        </div>
+                    </div>
+                """
+            probs_html += '</div>'
+            probs_ph.markdown(probs_html, unsafe_allow_html=True)
         else:
-            st.session_state.session_start = None
             metrics_ph.markdown(f"""
                 <div class="empty-state">
                     <i>📷</i>
                     <h3>Ready for analysis</h3>
-                    <p style="font-size: 13px; margin: 0;">Click "Start" below the camera panel to begin facial expression detection.</p>
+                    <p style="font-size: 13px; margin: 0;">Click "Take Photo" above to begin facial expression detection.</p>
                 </div>
             """, unsafe_allow_html=True)
             probs_ph.empty()
@@ -554,9 +489,6 @@ elif page == "⚙️ Settings":
     """, unsafe_allow_html=True)
     
     st.markdown('<div class="ai-card">', unsafe_allow_html=True)
-    st.markdown("### WebRTC Configuration")
-    st.write("Ensure your `st.secrets` contains Twilio credentials (`TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`) for reliable STUN/TURN connection on restrictive networks.")
-    
     st.markdown("### Model Information")
     st.write("- **Engine**: Convolutional Neural Network (TensorFlow/Keras)")
     st.write("- **Face Detection**: OpenCV Haar Cascade")
