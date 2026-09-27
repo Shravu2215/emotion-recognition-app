@@ -1,9 +1,8 @@
 streamlit==1.38.0
 streamlit-webrtc==0.47.1
 opencv-python-headless==4.10.0.84
-tensorflow-cpu
-numpy
-pandas
+tensorflow-cpu==2.15.0
+numpy==1.26.4
+pandas==2.2.2
 av==10.0.0
-requests
-twilio
+requests==2.31.0
