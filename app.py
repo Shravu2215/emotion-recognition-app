@@ -307,22 +307,33 @@ class EmotionProcessor(VideoProcessorBase):
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
         img = frame.to_ndarray(format="bgr24")
 
-        if MODEL_READY:
-            annotated, label, confidence, probs, faces_cnt = analyze_frame(img)
-        else:
-            annotated, label, confidence, probs, faces_cnt = img, "No face detected", 0.0, np.zeros(len(EMOTIONS)), 0
+        try:
+            if MODEL_READY:
+                annotated, label, confidence, probs, faces_cnt = analyze_frame(img)
+            else:
+                annotated, label, confidence, probs, faces_cnt = (
+                    img, "No face detected", 0.0, np.zeros(len(EMOTIONS)), 0
+                )
 
-        now = time.time()
-        with self.lock:
-            self.label = label
-            self.confidence = confidence
-            self.probabilities = probs
-            self.faces_count = faces_cnt
-            if now - self.last_record_time >= RECORD_EVERY_SEC:
-                self.new_records.append((round(now - self._t0, 1), label, confidence))
-                self.last_record_time = now
+            now = time.time()
+            with self.lock:
+                self.label = label
+                self.confidence = confidence
+                self.probabilities = probs
+                self.faces_count = faces_cnt
+                if now - self.last_record_time >= RECORD_EVERY_SEC:
+                    self.new_records.append((round(now - self._t0, 1), label, confidence))
+                    self.last_record_time = now
 
-        return av.VideoFrame.from_ndarray(annotated, format="bgr24")
+            return av.VideoFrame.from_ndarray(annotated, format="bgr24")
+
+        except Exception as e:
+            # Never let a processing error kill the video pipeline — log it
+            # into shared state and pass the raw frame straight through so
+            # the stream keeps playing instead of freezing/going black.
+            with self.lock:
+                self.label = f"Error: {type(e).__name__}"
+            return frame
 
     def pop_new_records(self):
         with self.lock:
@@ -386,7 +397,10 @@ if page == "📷 Live Dashboard":
             key="emotion-detection",
             mode=WebRtcMode.SENDRECV,
             video_processor_factory=EmotionProcessor,
-            media_stream_constraints={"video": True, "audio": False},
+            media_stream_constraints={
+                "video": {"width": {"ideal": 480}, "height": {"ideal": 360}},
+                "audio": False,
+            },
             async_processing=True,
             rtc_configuration={
                 "iceServers": [
