@@ -388,6 +388,16 @@ if page == "📷 Live Dashboard":
             video_processor_factory=EmotionProcessor,
             media_stream_constraints={"video": True, "audio": False},
             async_processing=True,
+            rtc_configuration={
+                "iceServers": [
+                    {"urls": ["stun:stun.l.google.com:19302"]},
+                    {
+                        "urls": ["turn:openrelay.metered.ca:80"],
+                        "username": "openrelayproject",
+                        "credential": "openrelayproject",
+                    },
+                ]
+            },
         )
 
         st.markdown("<br>", unsafe_allow_html=True)
