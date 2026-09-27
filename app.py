@@ -349,7 +349,7 @@ if page == "📷 Live Dashboard":
             file_bytes = np.asarray(bytearray(captured.getvalue()), dtype=np.uint8)
             img_bgr = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
             annotated, current, conf, probs, faces_cnt = analyze_frame(img_bgr)
-            st.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB), use_container_width=True)
+            st.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB), use_column_width=True)
 
             if st.session_state.session_start is None:
                 st.session_state.session_start = time.time()
