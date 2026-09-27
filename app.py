@@ -1,9 +1,5 @@
-import threading
 import time
-from collections import Counter, deque
-import os
 
-import av
 import cv2
 import numpy as np
 import pandas as pd
