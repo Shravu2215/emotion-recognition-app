@@ -337,104 +337,118 @@ if page == "📷 Live Dashboard":
                 📷 Detection Stream
             </div>
         """, unsafe_allow_html=True)
-        
-        captured = st.camera_input("Take a photo", label_visibility="collapsed")
 
-        current = "No face detected"
-        conf = 0
-        probs = np.zeros(len(EMOTIONS))
-        faces_cnt = 0
+        run = st.toggle("🔴 Start Live Feed", value=False)
+        frame_placeholder = st.empty()
 
-        if captured is not None:
-            file_bytes = np.asarray(bytearray(captured.getvalue()), dtype=np.uint8)
-            img_bgr = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-            annotated, current, conf, probs, faces_cnt = analyze_frame(img_bgr)
-            st.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB), use_column_width=True)
-
-            if st.session_state.session_start is None:
-                st.session_state.session_start = time.time()
-            now = time.time()
-            st.session_state.records.append(
-                (round(now - st.session_state.session_start, 1), current, conf)
-            )
-        
         # Analytics Section (Below Camera)
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown('<div class="ai-card">', unsafe_allow_html=True)
         st.markdown('<div class="card-title">📊 Session Analytics</div>', unsafe_allow_html=True)
-        
-        if len(st.session_state.records) > 0:
-            df = pd.DataFrame(st.session_state.records, columns=["time", "emotion", "confidence"])
-            
-            c1, c2 = st.columns(2)
-            with c1:
-                st.caption("Emotion Distribution")
-                dist = df["emotion"].value_counts()
-                st.bar_chart(dist, height=200)
-            with c2:
-                st.caption("Confidence Timeline")
-                st.line_chart(df.set_index("time")["confidence"], height=200)
-        else:
-            st.markdown("""
-                <div style="text-align: center; color: #94A3B8; padding: 30px 0; font-size: 13px;">
-                    Insufficient data. Start the camera to generate session analytics.
-                </div>
-            """, unsafe_allow_html=True)
-        
+        analytics_ph = st.empty()
         st.markdown('</div>', unsafe_allow_html=True)
 
     with col_side:
         st.markdown('<div class="ai-card">', unsafe_allow_html=True)
         st.markdown('<div class="card-title">🎯 Current Detection</div>', unsafe_allow_html=True)
-        
+
         # Placeholders for dynamic data
         metrics_ph = st.empty()
         probs_ph = st.empty()
         st.markdown('</div>', unsafe_allow_html=True)
-        
-        # Update panel based on the latest captured photo (if any)
-        if captured is not None:
-            mins, secs = 0, 0
-            if st.session_state.session_start is not None:
-                duration = int(time.time() - st.session_state.session_start)
-                mins, secs = divmod(duration, 60)
 
-            metrics_ph.markdown(
-                '<div class="metric-grid">'
-                f'<div class="stat-box"><div class="stat-label">Expression</div>'
-                f'<div class="stat-val" style="font-size:16px;">{EMOTION_ICONS.get(current, "")} {current}</div></div>'
-                f'<div class="stat-box"><div class="stat-label">Confidence</div>'
-                f'<div class="stat-val">{conf:.0f}%</div></div>'
-                f'<div class="stat-box"><div class="stat-label">Faces</div>'
-                f'<div class="stat-val">{faces_cnt}</div></div>'
-                f'<div class="stat-box"><div class="stat-label">Duration</div>'
-                f'<div class="stat-val">{mins}:{secs:02d}</div></div>'
-                '</div>',
+    def render_analytics():
+        if len(st.session_state.records) > 0:
+            df = pd.DataFrame(st.session_state.records, columns=["time", "emotion", "confidence"])
+            with analytics_ph.container():
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.caption("Emotion Distribution")
+                    st.bar_chart(df["emotion"].value_counts(), height=200)
+                with c2:
+                    st.caption("Confidence Timeline")
+                    st.line_chart(df.set_index("time")["confidence"], height=200)
+        else:
+            analytics_ph.markdown(
+                '<div style="text-align: center; color: #94A3B8; padding: 30px 0; font-size: 13px;">'
+                'Insufficient data. Start the live feed to generate session analytics.</div>',
                 unsafe_allow_html=True
             )
 
-            probs_html = '<div style="margin-top: 24px;"><div class="card-title">Live Probabilities</div>'
-            for i, emotion in enumerate(EMOTIONS):
-                p = probs[i]
-                color = EMOTION_COLORS[emotion]
-                probs_html += (
-                    f'<div class="prob-container">'
-                    f'<div class="prob-label"><span>{emotion}</span><span>{p:.1f}%</span></div>'
-                    f'<div class="prob-track">'
-                    f'<div class="prob-fill" style="width: {p}%; background-color: {color};"></div>'
-                    f'</div></div>'
-                )
-            probs_html += '</div>'
-            probs_ph.markdown(probs_html, unsafe_allow_html=True)
+    def render_side_panel(current, conf, probs, faces_cnt):
+        mins, secs = 0, 0
+        if st.session_state.session_start is not None:
+            duration = int(time.time() - st.session_state.session_start)
+            mins, secs = divmod(duration, 60)
+
+        metrics_ph.markdown(
+            '<div class="metric-grid">'
+            f'<div class="stat-box"><div class="stat-label">Expression</div>'
+            f'<div class="stat-val" style="font-size:16px;">{EMOTION_ICONS.get(current, "")} {current}</div></div>'
+            f'<div class="stat-box"><div class="stat-label">Confidence</div>'
+            f'<div class="stat-val">{conf:.0f}%</div></div>'
+            f'<div class="stat-box"><div class="stat-label">Faces</div>'
+            f'<div class="stat-val">{faces_cnt}</div></div>'
+            f'<div class="stat-box"><div class="stat-label">Duration</div>'
+            f'<div class="stat-val">{mins}:{secs:02d}</div></div>'
+            '</div>',
+            unsafe_allow_html=True
+        )
+
+        probs_html = '<div style="margin-top: 24px;"><div class="card-title">Live Probabilities</div>'
+        for i, emotion in enumerate(EMOTIONS):
+            p = probs[i]
+            color = EMOTION_COLORS[emotion]
+            probs_html += (
+                f'<div class="prob-container">'
+                f'<div class="prob-label"><span>{emotion}</span><span>{p:.1f}%</span></div>'
+                f'<div class="prob-track">'
+                f'<div class="prob-fill" style="width: {p}%; background-color: {color};"></div>'
+                f'</div></div>'
+            )
+        probs_html += '</div>'
+        probs_ph.markdown(probs_html, unsafe_allow_html=True)
+
+    if run:
+        if st.session_state.session_start is None:
+            st.session_state.session_start = time.time()
+
+        cap = cv2.VideoCapture(0)
+        last_record_time = 0.0
+
+        if not cap.isOpened():
+            st.error("❌ Webcam access nahi mil raha. Camera permission check karo ya doosri app usko use to nahi kar rahi.")
         else:
-            metrics_ph.markdown(f"""
-                <div class="empty-state">
-                    <i>📷</i>
-                    <h3>Ready for analysis</h3>
-                    <p style="font-size: 13px; margin: 0;">Click "Take Photo" above to begin facial expression detection.</p>
-                </div>
-            """, unsafe_allow_html=True)
-            probs_ph.empty()
+            while run:
+                ret, frame = cap.read()
+                if not ret:
+                    st.error("⚠️ Frame read nahi ho paaya, webcam disconnect ho gaya lagta hai.")
+                    break
+
+                annotated, current, conf, probs, faces_cnt = analyze_frame(frame)
+                frame_placeholder.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB), use_container_width=True)
+                render_side_panel(current, conf, probs, faces_cnt)
+
+                now = time.time()
+                if now - last_record_time >= RECORD_EVERY_SEC:
+                    st.session_state.records.append(
+                        (round(now - st.session_state.session_start, 1), current, conf)
+                    )
+                    last_record_time = now
+
+            cap.release()
+        render_analytics()
+    else:
+        frame_placeholder.markdown("""
+            <div class="empty-state">
+                <i>📷</i>
+                <h3>Ready for analysis</h3>
+                <p style="font-size: 13px; margin: 0;">Toggle "Start Live Feed" above to begin facial expression detection.</p>
+            </div>
+        """, unsafe_allow_html=True)
+        metrics_ph.empty()
+        probs_ph.empty()
+        render_analytics()
 
 
 elif page == "📈 Session Logs":
