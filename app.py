@@ -6,7 +6,19 @@ import cv2
 import numpy as np
 import pandas as pd
 import streamlit as st
+import os
+from twilio.rest import Client
 
+def get_ice_servers():
+    try:
+        account_sid = os.environ["TWILIO_ACCOUNT_SID"]
+        auth_token = os.environ["TWILIO_AUTH_TOKEN"]
+    except KeyError:
+        return [{"urls": ["stun:stun.l.google.com:19302"]}]
+
+    client = Client(account_sid, auth_token)
+    token = client.tokens.create()
+    return token.ice_servers
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode
 from tensorflow.keras.models import load_model
 
@@ -402,20 +414,7 @@ if page == "📷 Live Dashboard":
                 "audio": False,
             },
             async_processing=True,
-            rtc_configuration={
-                "iceServers": [
-                    {"urls": ["stun:stun.l.google.com:19302"]},
-                    {
-                        "urls": [
-                            "turn:openrelay.metered.ca:80",
-                            "turn:openrelay.metered.ca:443",
-                            "turn:openrelay.metered.ca:443?transport=tcp",
-                        ],
-                        "username": "openrelayproject",
-                        "credential": "openrelayproject",
-                    },
-                ]
-            },
+            rtc_configuration={"iceServers": get_ice_servers()},
         )
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown('<div class="ai-card">', unsafe_allow_html=True)
