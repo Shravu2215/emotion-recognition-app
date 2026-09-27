@@ -399,42 +399,31 @@ if page == "📷 Live Dashboard":
                 duration = int(time.time() - st.session_state.session_start)
                 mins, secs = divmod(duration, 60)
 
-            metrics_ph.markdown(f"""
-                <div class="metric-grid">
-                    <div class="stat-box">
-                        <div class="stat-label">Expression</div>
-                        <div class="stat-val" style="font-size:16px;">{EMOTION_ICONS.get(current, '')} {current}</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-label">Confidence</div>
-                        <div class="stat-val">{conf:.0f}%</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-label">Faces</div>
-                        <div class="stat-val">{faces_cnt}</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-label">Duration</div>
-                        <div class="stat-val">{mins}:{secs:02d}</div>
-                    </div>
-                </div>
-            """, unsafe_allow_html=True)
+            metrics_ph.markdown(
+                '<div class="metric-grid">'
+                f'<div class="stat-box"><div class="stat-label">Expression</div>'
+                f'<div class="stat-val" style="font-size:16px;">{EMOTION_ICONS.get(current, "")} {current}</div></div>'
+                f'<div class="stat-box"><div class="stat-label">Confidence</div>'
+                f'<div class="stat-val">{conf:.0f}%</div></div>'
+                f'<div class="stat-box"><div class="stat-label">Faces</div>'
+                f'<div class="stat-val">{faces_cnt}</div></div>'
+                f'<div class="stat-box"><div class="stat-label">Duration</div>'
+                f'<div class="stat-val">{mins}:{secs:02d}</div></div>'
+                '</div>',
+                unsafe_allow_html=True
+            )
 
             probs_html = '<div style="margin-top: 24px;"><div class="card-title">Live Probabilities</div>'
             for i, emotion in enumerate(EMOTIONS):
                 p = probs[i]
                 color = EMOTION_COLORS[emotion]
-                probs_html += f"""
-                    <div class="prob-container">
-                        <div class="prob-label">
-                            <span>{emotion}</span>
-                            <span>{p:.1f}%</span>
-                        </div>
-                        <div class="prob-track">
-                            <div class="prob-fill" style="width: {p}%; background-color: {color};"></div>
-                        </div>
-                    </div>
-                """
+                probs_html += (
+                    f'<div class="prob-container">'
+                    f'<div class="prob-label"><span>{emotion}</span><span>{p:.1f}%</span></div>'
+                    f'<div class="prob-track">'
+                    f'<div class="prob-fill" style="width: {p}%; background-color: {color};"></div>'
+                    f'</div></div>'
+                )
             probs_html += '</div>'
             probs_ph.markdown(probs_html, unsafe_allow_html=True)
         else:
