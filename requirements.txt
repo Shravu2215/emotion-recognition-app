@@ -3,3 +3,5 @@ opencv-python-headless==4.10.0.84
 tensorflow-cpu
 numpy
 pandas
+streamlit-webrtc==0.47.9
+av==11.0.0
