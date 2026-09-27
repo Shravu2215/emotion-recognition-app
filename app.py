@@ -1,10 +1,13 @@
+import threading
 import time
 
+import av
 import cv2
 import numpy as np
 import pandas as pd
 import streamlit as st
 
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode
 from tensorflow.keras.models import load_model
 
 # ============================================================
@@ -25,8 +28,8 @@ st.set_page_config(
 MODEL_PATH = "best_emotion_model.h5"
 IMG_SIZE = 48
 EMOTIONS = ["Angry", "Disgust", "Fear", "Happy", "Neutral", "Sad", "Surprise"]
-SMOOTH_WINDOW = 10
 RECORD_EVERY_SEC = 0.2
+UI_REFRESH_SEC = 0.3
 
 EMOTION_COLORS = {
     "Happy": "#EAB308",
@@ -52,18 +55,16 @@ st.markdown(
     """
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-    
+
     html, body, [class*="css"] {
         font-family: 'Inter', sans-serif;
     }
-    
-    /* Main Background */
+
     .stApp {
         background-color: #F1F5F9;
         color: #0F172A;
     }
-    
-    /* Sidebar Styling */
+
     [data-testid="stSidebar"] {
         background-color: #0F172A !important;
         border-right: 1px solid #1E293B;
@@ -74,8 +75,7 @@ st.markdown(
     [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
         color: #F8FAFC !important;
     }
-    
-    /* Style the radio buttons in the sidebar */
+
     div.row-widget.stRadio > div {
         background-color: transparent;
     }
@@ -86,8 +86,7 @@ st.markdown(
         border-radius: 8px;
         transition: all 0.2s ease;
     }
-    
-    /* Top Header */
+
     .header-container {
         display: flex;
         justify-content: space-between;
@@ -125,8 +124,7 @@ st.markdown(
         background-color: #10B981;
         border-radius: 50%;
     }
-    
-    /* Cards */
+
     .ai-card {
         background: #FFFFFF;
         border: 1px solid #E2E8F0;
@@ -146,8 +144,7 @@ st.markdown(
         align-items: center;
         gap: 8px;
     }
-    
-    /* Metrics Row */
+
     .metric-grid {
         display: grid;
         grid-template-columns: repeat(2, 1fr);
@@ -173,8 +170,7 @@ st.markdown(
         font-weight: 700;
         color: #0F172A;
     }
-    
-    /* Probabilities Bar */
+
     .prob-container {
         margin-bottom: 12px;
     }
@@ -198,8 +194,7 @@ st.markdown(
         border-radius: 4px;
         transition: width 0.3s ease;
     }
-    
-    /* Empty State */
+
     .empty-state {
         display: flex;
         flex-direction: column;
@@ -239,10 +234,11 @@ def load_resources():
 
 try:
     model, face_cascade = load_resources()
+    MODEL_READY = True
 except Exception as e:
     st.error("❌ AI model could not be loaded. Please ensure the model file is valid.")
     st.exception(e)
-    st.stop()
+    MODEL_READY = False
 
 # ============================================================
 # SESSION STATE
@@ -254,7 +250,7 @@ if "session_start" not in st.session_state:
     st.session_state.session_start = None
 
 # ============================================================
-# EMOTION PROCESSOR
+# EMOTION PROCESSOR (core inference, unchanged logic)
 # ============================================================
 
 def analyze_frame(img_bgr):
@@ -266,7 +262,7 @@ def analyze_frame(img_bgr):
     faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(80, 80))
 
     label = "No face detected"
-    confidence = 0
+    confidence = 0.0
     probabilities = np.zeros(len(EMOTIONS))
 
     if len(faces) > 0:
@@ -282,13 +278,61 @@ def analyze_frame(img_bgr):
         probabilities = prediction * 100
 
         color_hex = EMOTION_COLORS.get(label, "#6366F1").lstrip('#')
-        box_color = tuple(int(color_hex[i:i+2], 16) for i in (4, 2, 0))  # BGR
+        box_color = tuple(int(color_hex[i:i + 2], 16) for i in (4, 2, 0))  # BGR
         cv2.rectangle(img_bgr, (x, y), (x + w, y + h), box_color, 2)
         cv2.rectangle(img_bgr, (x, y - 30), (x + w, y), box_color, -1)
         cv2.putText(img_bgr, f"{label} {confidence:.0f}%", (x + 5, y - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
     return img_bgr, label, confidence, probabilities, len(faces)
+
+
+class EmotionProcessor(VideoProcessorBase):
+    """
+    Runs in a background WebRTC thread (browser camera -> here), separate
+    from the Streamlit main script thread. All shared state is guarded by
+    a lock so the main thread can safely read the latest result.
+    """
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.label = "No face detected"
+        self.confidence = 0.0
+        self.probabilities = np.zeros(len(EMOTIONS))
+        self.faces_count = 0
+        self.last_record_time = 0.0
+        self.new_records = []  # (elapsed_seconds, label, confidence) pending pickup by main thread
+        self._t0 = time.time()
+
+    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
+        img = frame.to_ndarray(format="bgr24")
+
+        if MODEL_READY:
+            annotated, label, confidence, probs, faces_cnt = analyze_frame(img)
+        else:
+            annotated, label, confidence, probs, faces_cnt = img, "No face detected", 0.0, np.zeros(len(EMOTIONS)), 0
+
+        now = time.time()
+        with self.lock:
+            self.label = label
+            self.confidence = confidence
+            self.probabilities = probs
+            self.faces_count = faces_cnt
+            if now - self.last_record_time >= RECORD_EVERY_SEC:
+                self.new_records.append((round(now - self._t0, 1), label, confidence))
+                self.last_record_time = now
+
+        return av.VideoFrame.from_ndarray(annotated, format="bgr24")
+
+    def pop_new_records(self):
+        with self.lock:
+            records, self.new_records = self.new_records, []
+            return records
+
+    def snapshot(self):
+        with self.lock:
+            return self.label, self.confidence, self.probabilities.copy(), self.faces_count
+
 
 # ============================================================
 # SIDEBAR
@@ -303,9 +347,9 @@ with st.sidebar:
             <div style="font-size: 18px; font-weight: 700; color: white; letter-spacing: 0.02em;">EmotionAI</div>
         </div>
     """, unsafe_allow_html=True)
-    
+
     page = st.radio(
-        "Navigation", 
+        "Navigation",
         ["📷 Live Dashboard", "📈 Session Logs", "⚙️ Settings"],
         label_visibility="collapsed"
     )
@@ -316,7 +360,6 @@ with st.sidebar:
 
 if page == "📷 Live Dashboard":
 
-    # Header
     st.markdown("""
         <div class="header-container">
             <div class="header-title">
@@ -331,17 +374,22 @@ if page == "📷 Live Dashboard":
     col_main, col_side = st.columns([1.6, 1], gap="medium")
 
     with col_main:
-        # Camera Section
         st.markdown("""
             <div class="card-title" style="margin-bottom: 8px;">
                 📷 Detection Stream
             </div>
         """, unsafe_allow_html=True)
 
-        run = st.toggle("🔴 Start Live Feed", value=False)
-        frame_placeholder = st.empty()
+        # Browser-side camera via WebRTC — works on Streamlit Community Cloud,
+        # unlike cv2.VideoCapture(0) which needs a physical camera on the server.
+        webrtc_ctx = webrtc_streamer(
+            key="emotion-detection",
+            mode=WebRtcMode.SENDRECV,
+            video_processor_factory=EmotionProcessor,
+            media_stream_constraints={"video": True, "audio": False},
+            async_processing=True,
+        )
 
-        # Analytics Section (Below Camera)
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown('<div class="ai-card">', unsafe_allow_html=True)
         st.markdown('<div class="card-title">📊 Session Analytics</div>', unsafe_allow_html=True)
@@ -351,8 +399,6 @@ if page == "📷 Live Dashboard":
     with col_side:
         st.markdown('<div class="ai-card">', unsafe_allow_html=True)
         st.markdown('<div class="card-title">🎯 Current Detection</div>', unsafe_allow_html=True)
-
-        # Placeholders for dynamic data
         metrics_ph = st.empty()
         probs_ph = st.empty()
         st.markdown('</div>', unsafe_allow_html=True)
@@ -409,41 +455,36 @@ if page == "📷 Live Dashboard":
         probs_html += '</div>'
         probs_ph.markdown(probs_html, unsafe_allow_html=True)
 
-    if run:
+    if webrtc_ctx.state.playing:
         if st.session_state.session_start is None:
             st.session_state.session_start = time.time()
 
-        cap = cv2.VideoCapture(0)
-        last_record_time = 0.0
+        # Poll the background processor's shared state on a light loop and
+        # push updates into the placeholders above. Stops as soon as the
+        # stream stops playing (button pressed / tab closed), so it never
+        # runs away in the background.
+        while webrtc_ctx.state.playing:
+            processor = webrtc_ctx.video_processor
+            if processor is None:
+                break
 
-        if not cap.isOpened():
-            st.error("❌ Webcam access nahi mil raha. Camera permission check karo ya doosri app usko use to nahi kar rahi.")
-        else:
-            while run:
-                ret, frame = cap.read()
-                if not ret:
-                    st.error("⚠️ Frame read nahi ho paaya, webcam disconnect ho gaya lagta hai.")
-                    break
+            new_records = processor.pop_new_records()
+            if new_records:
+                st.session_state.records.extend(new_records)
 
-                annotated, current, conf, probs, faces_cnt = analyze_frame(frame)
-                frame_placeholder.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB), use_container_width=True)
-                render_side_panel(current, conf, probs, faces_cnt)
+            label, conf, probs, faces_cnt = processor.snapshot()
+            render_side_panel(label, conf, probs, faces_cnt)
 
-                now = time.time()
-                if now - last_record_time >= RECORD_EVERY_SEC:
-                    st.session_state.records.append(
-                        (round(now - st.session_state.session_start, 1), current, conf)
-                    )
-                    last_record_time = now
+            if new_records:
+                render_analytics()
 
-            cap.release()
-        render_analytics()
+            time.sleep(UI_REFRESH_SEC)
     else:
-        frame_placeholder.markdown("""
+        st.markdown("""
             <div class="empty-state">
                 <i>📷</i>
                 <h3>Ready for analysis</h3>
-                <p style="font-size: 13px; margin: 0;">Toggle "Start Live Feed" above to begin facial expression detection.</p>
+                <p style="font-size: 13px; margin: 0;">Click "START" above and allow camera access to begin facial expression detection.</p>
             </div>
         """, unsafe_allow_html=True)
         metrics_ph.empty()
@@ -459,12 +500,12 @@ elif page == "📈 Session Logs":
             </div>
         </div>
     """, unsafe_allow_html=True)
-    
+
     st.markdown('<div class="ai-card">', unsafe_allow_html=True)
     if len(st.session_state.records) > 0:
         df = pd.DataFrame(st.session_state.records, columns=["Time (s)", "Predicted Emotion", "Confidence (%)"])
         st.dataframe(df.tail(100), use_container_width=True)
-        
+
         csv = df.to_csv(index=False).encode('utf-8')
         st.download_button("Download CSV", data=csv, file_name="emotion_history.csv", mime="text/csv")
     else:
@@ -486,11 +527,12 @@ elif page == "⚙️ Settings":
             </div>
         </div>
     """, unsafe_allow_html=True)
-    
+
     st.markdown('<div class="ai-card">', unsafe_allow_html=True)
     st.markdown("### Model Information")
     st.write("- **Engine**: Convolutional Neural Network (TensorFlow/Keras)")
     st.write("- **Face Detection**: OpenCV Haar Cascade")
     st.write("- **Input**: 48x48 Grayscale")
     st.write("- **Outputs**: Angry, Disgust, Fear, Happy, Neutral, Sad, Surprise")
+    st.write("- **Camera**: Browser-based via WebRTC (works on Streamlit Community Cloud)")
     st.markdown('</div>', unsafe_allow_html=True)
